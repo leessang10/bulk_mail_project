@@ -4,7 +4,8 @@ export const REDIS_KEYS = {
   RECIPIENT_GROUP: 'bulk-mail:recipient:group:{groupId}',
   MAIL_ANALYTICS: 'bulk-mail:analytics:{campaignId}',
   QUEUE_LOCK: 'bulk-mail:queue:lock',
-};
+  MAIL_RETRY: 'bulk-mail:mail:retry',
+} as const;
 
 export const REDIS_CHANNELS = {
   MAIL_SENT: 'bulk-mail.event.mail_sent',

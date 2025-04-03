@@ -1,38 +1,27 @@
-import { Body, Controller, Headers, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Logger, Post } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MailEventType } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { WebhookService } from './webhook.service';
 
-@Controller('webhooks')
+@Controller('webhook')
 export class WebhookController {
   private readonly logger = new Logger(WebhookController.name);
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly webhookService: WebhookService,
   ) {}
 
   /**
    * AWS SES 이벤트 웹훅을 처리합니다.
    */
   @Post('ses')
-  async handleSesWebhook(
-    @Headers('x-amz-sns-message-type') messageType: string,
-    @Body() payload: any,
-  ) {
-    this.logger.log(`SES 웹훅 수신: ${messageType}`);
-
-    // SNS 메시지 타입 확인
-    if (messageType === 'SubscriptionConfirmation') {
-      // SNS 구독 확인 처리
-      return this.handleSubscriptionConfirmation(payload);
-    } else if (messageType === 'Notification') {
-      // 일반 알림 처리
-      return this.processSesEvent(payload);
-    }
-
-    return { received: true, type: messageType };
+  async handleSESWebhook(@Body() payload: any) {
+    const message = JSON.parse(payload.Message);
+    return this.webhookService.handleSESEvent(message);
   }
 
   /**

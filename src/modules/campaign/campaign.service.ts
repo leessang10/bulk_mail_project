@@ -540,37 +540,29 @@ export class CampaignService {
   async send(id: string, userId: string) {
     const campaign = await this.findOne(id, userId);
 
-    if (campaign.status === CampaignStatus.SENT) {
-      throw new BadRequestException('이미 발송된 캠페인입니다.');
+    if (campaign.status !== CampaignStatus.DRAFT) {
+      throw new BadRequestException('초안 상태의 캠페인만 발송할 수 있습니다.');
     }
 
-    // 예약 발송 처리
-    if (campaign.scheduledAt && campaign.scheduledAt > new Date()) {
-      await this.prisma.campaign.update({
-        where: { id },
-        data: {
-          status: CampaignStatus.SCHEDULED,
-        },
-      });
-      return campaign;
-    }
-
-    // 즉시 발송 처리
-    await this.prisma.campaign.update({
-      where: { id },
-      data: {
-        status: CampaignStatus.SENDING,
-        sentAt: new Date(),
+    // Kafka로 메일 발송 이벤트 발행
+    await this.kafkaService.emit(KAFKA_TOPICS.MAIL_QUEUE, {
+      campaignId: id,
+      recipientId: userId,
+      templateId: campaign.templateId,
+      metadata: {
+        userId,
+        subject: campaign.subject,
+        senderEmail: campaign.senderEmail,
+        senderName: campaign.senderName,
       },
     });
 
-    // Kafka로 메일 발송 이벤트 발행
-    await this.kafkaService.sendMessage('mail-queue', {
-      campaignId: id,
-      userId,
+    // 캠페인 상태 업데이트
+    await this.updateCampaignStatus(id, {
+      status: CampaignStatus.SENDING,
     });
 
-    return campaign;
+    return { success: true };
   }
 
   /**
@@ -578,10 +570,6 @@ export class CampaignService {
    */
   async cancel(id: string, userId: string) {
     const campaign = await this.findOne(id, userId);
-
-    if (campaign.status !== CampaignStatus.SCHEDULED) {
-      throw new BadRequestException('예약된 캠페인만 취소할 수 있습니다.');
-    }
 
     return this.prisma.campaign.update({
       where: { id },

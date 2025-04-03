@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CampaignStatus, MailEventType } from '@prisma/client';
+import { KAFKA_TOPICS } from '../../common/constants/kafka.constant';
 import { REDIS_KEYS, REDIS_QUEUE } from '../../common/constants/redis.constant';
 import { MergeFields } from '../../common/types/mail.type';
+import { KafkaService } from '../../infrastructure/kafka/kafka.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { RedisService } from '../../infrastructure/redis/redis.service';
 import { CampaignService } from '../campaign/campaign.service';
@@ -16,6 +18,7 @@ export class MailQueueService {
   private readonly BATCH_SIZE = 50; // 한 번에 처리할 이메일 수
   private readonly MAX_RETRIES = 3; // 최대 재시도 횟수
   private readonly lockDuration = 60 * 30; // Redis 락 유지 시간 (30분)
+  private readonly batchSize = 100;
 
   constructor(
     private readonly redis: RedisService,
@@ -23,6 +26,7 @@ export class MailQueueService {
     private readonly mailService: MailService,
     private readonly campaignService: CampaignService,
     private readonly configService: ConfigService,
+    private readonly kafka: KafkaService,
   ) {}
 
   /**
@@ -303,5 +307,158 @@ export class MailQueueService {
     this.logger.log(
       `캠페인 ${campaignId}에 ${recipientIds.length}명의 수신자 추가됨`,
     );
+  }
+
+  /**
+   * 캠페인의 메일을 큐에 추가합니다.
+   */
+  async enqueueCampaign(campaignId: string, userId: string) {
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { id: campaignId, userId },
+      include: {
+        template: true,
+        recipients: {
+          include: {
+            recipient: true,
+          },
+        },
+      },
+    });
+
+    if (!campaign) {
+      throw new Error('캠페인을 찾을 수 없습니다.');
+    }
+
+    if (campaign.status === CampaignStatus.SENT) {
+      throw new Error('이미 발송된 캠페인입니다.');
+    }
+
+    // 캠페인 상태 업데이트
+    await this.prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: CampaignStatus.SENDING },
+    });
+
+    // 수신자를 배치로 나누어 처리
+    const recipients = campaign.recipients;
+    for (let i = 0; i < recipients.length; i += this.batchSize) {
+      const batch = recipients.slice(i, i + this.batchSize);
+
+      // Kafka 메시지 발행
+      await this.kafka.emit(KAFKA_TOPICS.MAIL_SEND, {
+        campaignId,
+        templateId: campaign.templateId,
+        batch: batch.map((cr) => ({
+          recipientId: cr.recipientId,
+          email: cr.recipient.email,
+          name: cr.recipient.name,
+          customFields: cr.recipient.customFields,
+        })),
+        subject: campaign.subject,
+        senderEmail: campaign.senderEmail,
+        senderName: campaign.senderName,
+      });
+    }
+
+    // Redis에 캠페인 상태 저장
+    const redisKey = REDIS_KEYS.CAMPAIGN_STATUS.replace('{id}', campaignId);
+    await this.redis.set(redisKey, CampaignStatus.SENDING);
+
+    return { success: true, message: '메일 발송이 시작되었습니다.' };
+  }
+
+  /**
+   * 메일 발송 이벤트를 처리합니다.
+   */
+  async handleMailEvent(event: {
+    type: MailEventType;
+    messageId: string;
+    campaignId: string;
+    recipientId: string;
+    metadata?: Record<string, any>;
+  }) {
+    // 이벤트 저장
+    await this.prisma.mailEvent.create({
+      data: {
+        type: event.type,
+        messageId: event.messageId,
+        campaignId: event.campaignId,
+        recipientId: event.recipientId,
+        metadata: event.metadata,
+      },
+    });
+
+    // 실패한 경우 재시도 큐에 추가
+    if (event.type === MailEventType.FAILED) {
+      await this.handleFailedMail(event.campaignId, event.recipientId);
+    }
+
+    // 캠페인 상태 업데이트 체크
+    await this.checkCampaignCompletion(event.campaignId);
+  }
+
+  /**
+   * 실패한 메일을 처리합니다.
+   */
+  private async handleFailedMail(campaignId: string, recipientId: string) {
+    const retryKey = `${REDIS_KEYS.MAIL_RETRY}:${campaignId}:${recipientId}`;
+    const retryCount = await this.redis.get(retryKey);
+    const maxRetries = this.configService.get<number>('MAIL_MAX_RETRIES', 3);
+
+    if (!retryCount || parseInt(retryCount) < maxRetries) {
+      const nextRetryCount = retryCount ? parseInt(retryCount) + 1 : 1;
+      await this.redis.set(retryKey, nextRetryCount.toString());
+
+      // 재시도 큐에 추가
+      await this.kafka.emit(KAFKA_TOPICS.MAIL_SEND, {
+        campaignId,
+        recipientId,
+        isRetry: true,
+        retryCount: nextRetryCount,
+      });
+    }
+  }
+
+  /**
+   * 캠페인 완료 상태를 체크합니다.
+   */
+  private async checkCampaignCompletion(campaignId: string) {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: campaignId },
+      include: {
+        recipients: true,
+        mailEvents: {
+          where: {
+            type: {
+              in: [
+                MailEventType.SENT,
+                MailEventType.FAILED,
+                MailEventType.REJECTED,
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    if (!campaign) return;
+
+    const totalRecipients = campaign.recipients.length;
+    const processedEvents = campaign.mailEvents.length;
+
+    // 모든 수신자에 대한 처리가 완료된 경우
+    if (totalRecipients === processedEvents) {
+      await this.prisma.campaign.update({
+        where: { id: campaignId },
+        data: {
+          status: CampaignStatus.COMPLETED,
+          completedAt: new Date(),
+        },
+      });
+
+      // Redis 상태 업데이트
+      const redisKey = REDIS_KEYS.CAMPAIGN_STATUS.replace('{id}', campaignId);
+      await this.redis.set(redisKey, CampaignStatus.COMPLETED);
+    }
   }
 }
