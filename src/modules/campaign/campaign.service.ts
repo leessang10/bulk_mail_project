@@ -538,22 +538,22 @@ export class CampaignService {
    * 캠페인을 발송합니다.
    */
   async send(id: string, userId: string) {
-    const campaign = await this.findOne(id, userId);
+    const { status, template, recipients, subject, senderEmail, senderName } =
+      await this.findOne(id, userId);
 
-    if (campaign.status !== CampaignStatus.DRAFT) {
+    if (status !== CampaignStatus.DRAFT) {
       throw new BadRequestException('초안 상태의 캠페인만 발송할 수 있습니다.');
     }
 
     // Kafka로 메일 발송 이벤트 발행
     await this.kafkaService.emit(KAFKA_TOPICS.MAIL_QUEUE, {
       campaignId: id,
-      recipientId: userId,
-      templateId: campaign.templateId,
+      recipientIds: recipients.map((cr) => cr.recipient.id),
+      templateId: template.id,
       metadata: {
-        userId,
-        subject: campaign.subject,
-        senderEmail: campaign.senderEmail,
-        senderName: campaign.senderName,
+        subject,
+        senderEmail,
+        senderName,
       },
     });
 
@@ -569,10 +569,8 @@ export class CampaignService {
    * 예약된 캠페인을 취소합니다.
    */
   async cancel(id: string, userId: string) {
-    const campaign = await this.findOne(id, userId);
-
     return this.prisma.campaign.update({
-      where: { id },
+      where: { id, userId },
       data: {
         status: CampaignStatus.DRAFT,
         scheduledAt: null,
