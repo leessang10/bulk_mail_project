@@ -4,6 +4,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { RedisModule } from './infrastructure/redis/redis.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { CampaignModule } from './modules/campaign/campaign.module';
 import { MailQueueModule } from './modules/mail-queue/mail-queue.module';
 import { MailModule } from './modules/mail/mail.module';
@@ -23,6 +24,7 @@ import { WebhookModule } from './modules/webhook/webhook.module';
     CampaignModule,
     MailQueueModule,
     WebhookModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
