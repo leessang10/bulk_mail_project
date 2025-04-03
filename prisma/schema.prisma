@@ -23,6 +23,7 @@ model Campaign {
   status      CampaignStatus
   scheduledAt DateTime?
   sentAt      DateTime?
+  completedAt DateTime?
   
   // 관계
   template    MailTemplate @relation(fields: [templateId], references: [id])
@@ -192,4 +193,7 @@ enum MailEventType {
   CLICKED     // 클릭됨
   BOUNCED     // 반송됨
   COMPLAINED  // 스팸 신고됨
+  FAILED      // 실패함
+  REJECTED    // 거부됨
+  OTHER       // 기타
 }
