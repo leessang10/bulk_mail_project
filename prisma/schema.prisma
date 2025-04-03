@@ -125,15 +125,21 @@ model MailTemplate {
   name        String
   mjmlContent String    @db.Text
   description String?
+  category    String?
+  mergeTags   Json?     @db.JsonB
   version     Int       @default(1)
   isActive    Boolean   @default(true)
   
   // 관계
+  user        User      @relation(fields: [userId], references: [id])
+  userId      String
   campaigns   Campaign[]
   
   // 메타 필드
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
 }
 
 // MailEvent 모델: 메일 이벤트 (발송, 열람, 클릭 등)
@@ -219,6 +225,7 @@ model User {
   // 관계
   groups      Group[]
   campaigns   Campaign[]
+  templates   MailTemplate[]
   
   // 메타 필드
   createdAt   DateTime  @default(now())

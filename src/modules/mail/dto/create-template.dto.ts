@@ -14,4 +14,7 @@ export class CreateTemplateDto {
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
+
+  @IsString()
+  userId: string;
 }
