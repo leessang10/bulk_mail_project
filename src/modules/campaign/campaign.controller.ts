@@ -1,21 +1,24 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
   Post,
-  Query,
   UseGuards,
 } from '@nestjs/common';
-import { CampaignStatus, UserRole } from '@prisma/client';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CampaignService } from './campaign.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
-import { UpdateCampaignStatusDto } from './dto/update-campaign-status.dto';
+import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
+@ApiTags('campaigns')
 @Controller('campaigns')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class CampaignController {
@@ -26,8 +29,12 @@ export class CampaignController {
    */
   @Post()
   @Roles(UserRole.ADMIN, UserRole.USER)
-  async create(@Body() createCampaignDto: CreateCampaignDto) {
-    return this.campaignService.createCampaign(createCampaignDto);
+  @ApiOperation({ summary: '새 캠페인 생성' })
+  create(
+    @Body() createCampaignDto: CreateCampaignDto,
+    @CurrentUser() userId: string,
+  ) {
+    return this.campaignService.createCampaign(createCampaignDto, userId);
   }
 
   /**
@@ -35,12 +42,9 @@ export class CampaignController {
    */
   @Get()
   @Roles(UserRole.ADMIN, UserRole.USER)
-  async findAll(
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
-    @Query('status') status?: CampaignStatus,
-  ) {
-    return this.campaignService.findAllCampaigns(+page, +limit, status);
+  @ApiOperation({ summary: '모든 캠페인 조회' })
+  findAll(@CurrentUser() userId: string) {
+    return this.campaignService.findAll(userId);
   }
 
   /**
@@ -48,32 +52,53 @@ export class CampaignController {
    */
   @Get(':id')
   @Roles(UserRole.ADMIN, UserRole.USER)
-  async findOne(@Param('id') id: string) {
-    return this.campaignService.findCampaign(id);
+  @ApiOperation({ summary: '특정 캠페인 조회' })
+  findOne(@Param('id') id: string, @CurrentUser() userId: string) {
+    return this.campaignService.findOne(id, userId);
   }
 
   /**
    * 캠페인 상태를 업데이트합니다.
    */
-  @Patch(':id/status')
+  @Patch(':id')
   @Roles(UserRole.ADMIN, UserRole.USER)
-  async updateStatus(
+  @ApiOperation({ summary: '캠페인 정보 업데이트' })
+  update(
     @Param('id') id: string,
-    @Body() updateStatusDto: UpdateCampaignStatusDto,
+    @Body() updateCampaignDto: UpdateCampaignDto,
+    @CurrentUser() userId: string,
   ) {
-    return this.campaignService.updateCampaignStatus(id, updateStatusDto);
+    return this.campaignService.update(id, updateCampaignDto, userId);
   }
 
   /**
-   * 테스트 이메일을 발송합니다.
+   * 캠페인을 삭제합니다.
    */
-  @Post(':id/test')
+  @Delete(':id')
   @Roles(UserRole.ADMIN, UserRole.USER)
-  async sendTestEmail(
-    @Param('id') id: string,
-    @Body('emails') emails: string[],
-  ) {
-    return this.campaignService.sendTestEmail(id, emails);
+  @ApiOperation({ summary: '캠페인 삭제' })
+  remove(@Param('id') id: string, @CurrentUser() userId: string) {
+    return this.campaignService.remove(id, userId);
+  }
+
+  /**
+   * 캠페인을 발송합니다.
+   */
+  @Post(':id/send')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '캠페인 발송' })
+  send(@Param('id') id: string, @CurrentUser() userId: string) {
+    return this.campaignService.send(id, userId);
+  }
+
+  /**
+   * 예약된 캠페인을 취소합니다.
+   */
+  @Post(':id/cancel')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '예약된 캠페인 취소' })
+  cancel(@Param('id') id: string, @CurrentUser() userId: string) {
+    return this.campaignService.cancel(id, userId);
   }
 
   /**

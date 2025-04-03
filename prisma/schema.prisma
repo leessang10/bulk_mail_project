@@ -26,6 +26,8 @@ model Campaign {
   completedAt DateTime?
   
   // 관계
+  user        User      @relation(fields: [userId], references: [id])
+  userId      String
   template    MailTemplate @relation(fields: [templateId], references: [id])
   templateId  String
   groups      Group[]
@@ -37,6 +39,7 @@ model Campaign {
   updatedAt   DateTime    @updatedAt
 
   @@index([status])
+  @@index([userId])
 }
 
 // Recipient 모델: 수신자 정보
@@ -85,12 +88,17 @@ model Group {
   description String?
   
   // 관계
+  user        User      @relation(fields: [userId], references: [id])
+  userId      String
   campaigns   Campaign[]
   recipients  GroupRecipient[]
   
   // 메타 필드
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  @@unique([id, userId])
+  @@index([userId])
 }
 
 // GroupRecipient 모델: Group과 Recipient의 M:N 관계
@@ -172,6 +180,7 @@ enum CampaignStatus {
   DRAFT       // 초안
   SCHEDULED   // 예약됨
   SENDING     // 발송 중
+  SENT        // 발송됨
   COMPLETED   // 완료됨
   CANCELLED   // 취소됨
   FAILED      // 실패
@@ -206,6 +215,12 @@ model User {
   name        String?
   role        UserRole  @default(USER)
   lastLoginAt DateTime?
+  
+  // 관계
+  groups      Group[]
+  campaigns   Campaign[]
+  
+  // 메타 필드
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

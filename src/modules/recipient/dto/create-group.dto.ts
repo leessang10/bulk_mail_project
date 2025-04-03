@@ -1,7 +1,8 @@
-import { IsArray, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class CreateGroupDto {
   @IsString()
+  @IsNotEmpty()
   name: string;
 
   @IsString()
@@ -9,6 +10,7 @@ export class CreateGroupDto {
   description?: string;
 
   @IsArray()
+  @IsString({ each: true })
   @IsOptional()
   recipientIds?: string[];
 }

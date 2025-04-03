@@ -4,11 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Recipient, RecipientStatus } from '@prisma/client';
-import { REDIS_KEYS } from '../../common/constants/redis.constant';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { RedisService } from '../../infrastructure/redis/redis.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { CreateRecipientDto } from './dto/create-recipient.dto';
+import { UpdateRecipientDto } from './dto/update-recipient.dto';
 
 @Injectable()
 export class RecipientService {
@@ -190,91 +190,41 @@ export class RecipientService {
   /**
    * 새 그룹을 생성합니다.
    */
-  async createGroup(createGroupDto: CreateGroupDto): Promise<any> {
-    const { recipientIds, ...groupData } = createGroupDto;
-
-    // 트랜잭션으로 그룹 생성과 수신자 연결 동시 처리
-    return this.prisma.$transaction(async (tx) => {
-      // 그룹 생성
-      const group = await tx.group.create({
-        data: groupData,
-      });
-
-      // 수신자 연결 (있는 경우)
-      if (recipientIds && recipientIds.length > 0) {
-        await tx.groupRecipient.createMany({
-          data: recipientIds.map((recipientId) => ({
-            groupId: group.id,
-            recipientId,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      return group;
+  async createGroup(groupData: CreateGroupDto, userId: string) {
+    return this.prisma.group.create({
+      data: {
+        ...groupData,
+        user: {
+          connect: { id: userId },
+        },
+      },
     });
   }
 
   /**
    * 그룹에 수신자를 추가합니다.
    */
-  async addRecipientsToGroup(
-    groupId: string,
-    recipientIds: string[],
-  ): Promise<{ success: boolean; count: number }> {
-    // 그룹 존재 확인
-    const group = await this.prisma.group.findUnique({
+  async addRecipientsToGroup(groupId: string, recipientIds: string[]) {
+    const data = recipientIds.map((recipientId) => ({
+      groupId,
+      recipientId,
+    }));
+
+    await this.prisma.groupRecipient.createMany({
+      data,
+      skipDuplicates: true,
+    });
+
+    return this.prisma.group.findUnique({
       where: { id: groupId },
-    });
-
-    if (!group) {
-      throw new NotFoundException(`ID ${groupId}의 그룹을 찾을 수 없습니다.`);
-    }
-
-    // 유효한 수신자 ID만 추가
-    const existingRecipients = await this.prisma.recipient.findMany({
-      where: {
-        id: { in: recipientIds },
+      include: {
+        recipients: {
+          include: {
+            recipient: true,
+          },
+        },
       },
-      select: { id: true },
     });
-
-    const validRecipientIds = existingRecipients.map((r) => r.id);
-
-    // 이미 그룹에 있는 수신자 필터링
-    const existingGroupRecipients = await this.prisma.groupRecipient.findMany({
-      where: {
-        groupId,
-        recipientId: { in: validRecipientIds },
-      },
-      select: { recipientId: true },
-    });
-
-    const existingIds = new Set(
-      existingGroupRecipients.map((r) => r.recipientId),
-    );
-    const newRecipientIds = validRecipientIds.filter(
-      (id) => !existingIds.has(id),
-    );
-
-    // 새 수신자 추가
-    if (newRecipientIds.length > 0) {
-      await this.prisma.groupRecipient.createMany({
-        data: newRecipientIds.map((recipientId) => ({
-          groupId,
-          recipientId,
-        })),
-      });
-
-      // Redis 캐시 업데이트
-      const redisKey = REDIS_KEYS.RECIPIENT_GROUP.replace('{groupId}', groupId);
-      await this.redis.del(redisKey);
-    }
-
-    return {
-      success: true,
-      count: newRecipientIds.length,
-    };
   }
 
   /**
@@ -346,5 +296,20 @@ export class RecipientService {
       })),
       total,
     };
+  }
+
+  async update(id: string, updateRecipientDto: UpdateRecipientDto) {
+    return this.prisma.recipient.update({
+      where: { id },
+      data: updateRecipientDto,
+    });
+  }
+
+  async remove(id: string) {
+    await this.prisma.recipient.delete({
+      where: { id },
+    });
+
+    return { id };
   }
 }

@@ -28,6 +28,6 @@ export class RolesGuard implements CanActivate {
     }
 
     // 사용자 역할이 필요한 역할 중 하나와 일치하는지 확인
-    return requiredRoles.some((role) => user.role === role);
+    return requiredRoles.some((role) => user?.role === role);
   }
 }

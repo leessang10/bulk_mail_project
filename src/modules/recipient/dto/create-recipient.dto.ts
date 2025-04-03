@@ -1,7 +1,14 @@
-import { IsEmail, IsObject, IsOptional, IsString } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreateRecipientDto {
   @IsEmail()
+  @IsNotEmpty()
   email: string;
 
   @IsString()

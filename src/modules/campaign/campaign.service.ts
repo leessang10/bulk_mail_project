@@ -1,23 +1,29 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Campaign, CampaignStatus, Recipient } from '@prisma/client';
 import { KAFKA_TOPICS } from '../../common/constants/kafka.constant';
 import { REDIS_KEYS } from '../../common/constants/redis.constant';
+import { KafkaService } from '../../infrastructure/kafka/kafka.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { RedisService } from '../../infrastructure/redis/redis.service';
 import { MailService } from '../mail/services/mail.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignStatusDto } from './dto/update-campaign-status.dto';
+import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
 @Injectable()
 export class CampaignService {
+  private readonly logger = new Logger(CampaignService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly mailService: MailService,
+    private readonly kafkaService: KafkaService,
   ) {}
 
   /**
@@ -25,9 +31,16 @@ export class CampaignService {
    */
   async createCampaign(
     createCampaignDto: CreateCampaignDto,
+    userId: string,
   ): Promise<Campaign> {
-    const { groupIds, recipientIds, senderEmail, senderName, ...campaignData } =
-      createCampaignDto;
+    const {
+      groupIds,
+      recipientIds,
+      senderEmail,
+      senderName,
+      templateId,
+      ...campaignData
+    } = createCampaignDto;
 
     // 환경변수에서 기본 발신자 정보 가져오기
     const defaultSenderEmail = process.env.DEFAULT_SENDER_EMAIL;
@@ -41,30 +54,23 @@ export class CampaignService {
           senderEmail: senderEmail || defaultSenderEmail,
           senderName: senderName || defaultSenderName,
           status: CampaignStatus.DRAFT,
+          user: {
+            connect: { id: userId },
+          },
+          template: {
+            connect: { id: templateId },
+          },
         },
       });
 
       // 2. 그룹 연결 (있는 경우)
       if (groupIds && groupIds.length > 0) {
-        await tx.campaign.update({
-          where: { id: campaign.id },
-          data: {
-            groups: {
-              connect: groupIds.map((id) => ({ id })),
-            },
-          },
-        });
+        await this.linkGroupsToCampaign(campaign.id, groupIds);
       }
 
       // 3. 개별 수신자 연결 (있는 경우)
       if (recipientIds && recipientIds.length > 0) {
-        await tx.campaignRecipient.createMany({
-          data: recipientIds.map((recipientId) => ({
-            campaignId: campaign.id,
-            recipientId,
-          })),
-          skipDuplicates: true,
-        });
+        await this.linkRecipientsToCampaign(campaign.id, recipientIds);
       }
 
       // 4. 캠페인 상태 Redis에 저장
@@ -383,5 +389,206 @@ export class CampaignService {
           ? (eventCountMap['BOUNCED'] || 0) / recipientCount
           : 0,
     };
+  }
+
+  // 헬퍼 메서드: 캠페인에 그룹 연결
+  private async linkGroupsToCampaign(campaignId: string, groupIds: string[]) {
+    return this.prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        groups: {
+          connect: groupIds.map((id) => ({ id })),
+        },
+      },
+    });
+  }
+
+  // 헬퍼 메서드: 캠페인에 수신자 연결
+  private async linkRecipientsToCampaign(
+    campaignId: string,
+    recipientIds: string[],
+  ) {
+    const data = recipientIds.map((recipientId) => ({
+      campaignId,
+      recipientId,
+    }));
+
+    await this.prisma.campaignRecipient.createMany({
+      data,
+      skipDuplicates: true,
+    });
+  }
+
+  /**
+   * 사용자의 모든 캠페인을 조회합니다.
+   */
+  async findAll(userId: string) {
+    return this.prisma.campaign.findMany({
+      where: { userId },
+      include: {
+        template: true,
+        groups: true,
+        recipients: {
+          include: {
+            recipient: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * 특정 캠페인을 조회합니다.
+   */
+  async findOne(id: string, userId: string) {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id },
+      include: {
+        template: true,
+        groups: true,
+        recipients: {
+          include: {
+            recipient: true,
+          },
+        },
+      },
+    });
+
+    if (!campaign || campaign.userId !== userId) {
+      throw new NotFoundException('캠페인을 찾을 수 없습니다.');
+    }
+
+    return campaign;
+  }
+
+  /**
+   * 캠페인을 업데이트합니다.
+   */
+  async update(
+    id: string,
+    updateCampaignDto: UpdateCampaignDto,
+    userId: string,
+  ) {
+    const campaign = await this.findOne(id, userId);
+
+    if (campaign.status === CampaignStatus.SENT) {
+      throw new BadRequestException('이미 발송된 캠페인은 수정할 수 없습니다.');
+    }
+
+    const { groupIds, recipientIds, ...updateData } = updateCampaignDto;
+
+    await this.prisma.$transaction(async (tx) => {
+      // 기본 정보 업데이트
+      await tx.campaign.update({
+        where: { id },
+        data: updateData,
+      });
+
+      // 그룹 연결 업데이트
+      if (groupIds !== undefined) {
+        await tx.campaign.update({
+          where: { id },
+          data: {
+            groups: {
+              set: groupIds.map((groupId) => ({ id: groupId })),
+            },
+          },
+        });
+      }
+
+      // 수신자 연결 업데이트
+      if (recipientIds !== undefined) {
+        await tx.campaignRecipient.deleteMany({
+          where: { campaignId: id },
+        });
+
+        if (recipientIds.length > 0) {
+          await this.linkRecipientsToCampaign(id, recipientIds);
+        }
+      }
+    });
+
+    return this.findOne(id, userId);
+  }
+
+  /**
+   * 캠페인을 삭제합니다.
+   */
+  async remove(id: string, userId: string) {
+    const campaign = await this.findOne(id, userId);
+
+    if (campaign.status === CampaignStatus.SENT) {
+      throw new BadRequestException('이미 발송된 캠페인은 삭제할 수 없습니다.');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.campaignRecipient.deleteMany({
+        where: { campaignId: id },
+      }),
+      this.prisma.campaign.delete({
+        where: { id },
+      }),
+    ]);
+
+    return { id };
+  }
+
+  /**
+   * 캠페인을 발송합니다.
+   */
+  async send(id: string, userId: string) {
+    const campaign = await this.findOne(id, userId);
+
+    if (campaign.status === CampaignStatus.SENT) {
+      throw new BadRequestException('이미 발송된 캠페인입니다.');
+    }
+
+    // 예약 발송 처리
+    if (campaign.scheduledAt && campaign.scheduledAt > new Date()) {
+      await this.prisma.campaign.update({
+        where: { id },
+        data: {
+          status: CampaignStatus.SCHEDULED,
+        },
+      });
+      return campaign;
+    }
+
+    // 즉시 발송 처리
+    await this.prisma.campaign.update({
+      where: { id },
+      data: {
+        status: CampaignStatus.SENDING,
+        sentAt: new Date(),
+      },
+    });
+
+    // Kafka로 메일 발송 이벤트 발행
+    await this.kafkaService.sendMessage('mail-queue', {
+      campaignId: id,
+      userId,
+    });
+
+    return campaign;
+  }
+
+  /**
+   * 예약된 캠페인을 취소합니다.
+   */
+  async cancel(id: string, userId: string) {
+    const campaign = await this.findOne(id, userId);
+
+    if (campaign.status !== CampaignStatus.SCHEDULED) {
+      throw new BadRequestException('예약된 캠페인만 취소할 수 있습니다.');
+    }
+
+    return this.prisma.campaign.update({
+      where: { id },
+      data: {
+        status: CampaignStatus.DRAFT,
+        scheduledAt: null,
+      },
+    });
   }
 }

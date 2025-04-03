@@ -7,13 +7,17 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { RecipientStatus } from '@prisma/client';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { CreateRecipientDto } from './dto/create-recipient.dto';
 import { RecipientService } from './recipient.service';
 
 @Controller('api/v1/recipients')
+@UseGuards(JwtAuthGuard)
 export class RecipientController {
   constructor(private readonly recipientService: RecipientService) {}
 
@@ -48,8 +52,11 @@ export class RecipientController {
   }
 
   @Post('/groups')
-  async createGroup(@Body() createGroupDto: CreateGroupDto) {
-    return this.recipientService.createGroup(createGroupDto);
+  async createGroup(
+    @Body() createGroupDto: CreateGroupDto,
+    @CurrentUser() userId: string,
+  ) {
+    return this.recipientService.createGroup(createGroupDto, userId);
   }
 
   @Get('/groups')
