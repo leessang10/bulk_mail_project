@@ -78,8 +78,9 @@ export class TemplateService {
     id: string,
     updateTemplateDto: UpdateTemplateDto,
     userId: string,
+    comment?: string,
   ) {
-    await this.findOne(id, userId);
+    const template = await this.findOne(id, userId);
 
     if (updateTemplateDto.mjmlContent) {
       try {
@@ -91,6 +92,20 @@ export class TemplateService {
       }
     }
 
+    // 현재 버전을 히스토리에 저장
+    await this.prisma.mailTemplateVersion.create({
+      data: {
+        templateId: id,
+        version: template.version,
+        mjmlContent: template.mjmlContent,
+        description: template.description,
+        mergeTags: template.mergeTags,
+        comment,
+        createdBy: userId,
+      },
+    });
+
+    // 템플릿 업데이트
     return this.prisma.mailTemplate.update({
       where: { id },
       data: {
@@ -99,6 +114,7 @@ export class TemplateService {
         mjmlContent: updateTemplateDto.mjmlContent,
         category: updateTemplateDto.category,
         mergeTags: updateTemplateDto.mergeTags,
+        version: template.version + 1,
       },
     });
   }
@@ -200,6 +216,139 @@ export class TemplateService {
       currentYear: new Date().getFullYear(),
       companyName: '테스트 회사',
       companyAddress: '서울시 강남구',
+    };
+  }
+
+  /**
+   * 템플릿을 복제합니다.
+   */
+  async clone(id: string, userId: string, newName?: string) {
+    const template = await this.findOne(id, userId);
+
+    const clonedTemplate = await this.prisma.mailTemplate.create({
+      data: {
+        name: newName || `${template.name} (복사본)`,
+        description: template.description,
+        mjmlContent: template.mjmlContent,
+        category: template.category,
+        mergeTags: template.mergeTags,
+        userId,
+      },
+    });
+
+    this.logger.log(`Template ${id} cloned to ${clonedTemplate.id}`);
+    return clonedTemplate;
+  }
+
+  /**
+   * 템플릿의 버전 기록을 조회합니다.
+   */
+  async getVersionHistory(id: string, userId: string) {
+    await this.findOne(id, userId);
+
+    return this.prisma.mailTemplateVersion.findMany({
+      where: {
+        templateId: id,
+      },
+      orderBy: {
+        version: 'desc',
+      },
+    });
+  }
+
+  /**
+   * 특정 버전의 템플릿을 조회합니다.
+   */
+  async getVersion(id: string, version: number, userId: string) {
+    await this.findOne(id, userId);
+
+    const templateVersion = await this.prisma.mailTemplateVersion.findUnique({
+      where: {
+        templateId_version: {
+          templateId: id,
+          version,
+        },
+      },
+    });
+
+    if (!templateVersion) {
+      throw new NotFoundException('해당 버전을 찾을 수 없습니다.');
+    }
+
+    return templateVersion;
+  }
+
+  /**
+   * 특정 버전으로 템플릿을 복원합니다.
+   */
+  async restoreVersion(id: string, version: number, userId: string) {
+    const templateVersion = await this.getVersion(id, version, userId);
+
+    // 현재 버전을 히스토리에 저장
+    const currentTemplate = await this.findOne(id, userId);
+    await this.prisma.mailTemplateVersion.create({
+      data: {
+        templateId: id,
+        version: currentTemplate.version + 1,
+        mjmlContent: currentTemplate.mjmlContent,
+        description: currentTemplate.description,
+        mergeTags: currentTemplate.mergeTags,
+        comment: `버전 ${version}에서 복원`,
+        createdBy: userId,
+      },
+    });
+
+    // 선택한 버전으로 복원
+    return this.prisma.mailTemplate.update({
+      where: { id },
+      data: {
+        mjmlContent: templateVersion.mjmlContent,
+        description: templateVersion.description,
+        mergeTags: templateVersion.mergeTags,
+        version: currentTemplate.version + 1,
+      },
+    });
+  }
+
+  /**
+   * 두 버전의 템플릿을 비교합니다.
+   */
+  async compareVersions(
+    id: string,
+    version1: number,
+    version2: number,
+    userId: string,
+  ) {
+    const [v1, v2] = await Promise.all([
+      this.getVersion(id, version1, userId),
+      this.getVersion(id, version2, userId),
+    ]);
+
+    return {
+      mjmlContentDiff: {
+        version1: v1.mjmlContent,
+        version2: v2.mjmlContent,
+      },
+      mergeTagsDiff: {
+        version1: v1.mergeTags,
+        version2: v2.mergeTags,
+      },
+      descriptionDiff: {
+        version1: v1.description,
+        version2: v2.description,
+      },
+      metadata: {
+        version1: {
+          createdAt: v1.createdAt,
+          createdBy: v1.createdBy,
+          comment: v1.comment,
+        },
+        version2: {
+          createdAt: v2.createdAt,
+          createdBy: v2.createdBy,
+          comment: v2.comment,
+        },
+      },
     };
   }
 }

@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -55,8 +56,9 @@ export class TemplateController {
     @Param('id') id: string,
     @Body() updateTemplateDto: UpdateTemplateDto,
     @CurrentUser('id') userId: string,
+    @Query('comment') comment?: string,
   ) {
-    return this.templateService.update(id, updateTemplateDto, userId);
+    return this.templateService.update(id, updateTemplateDto, userId, comment);
   }
 
   @Delete(':id')
@@ -75,5 +77,60 @@ export class TemplateController {
     @Body() previewData: Record<string, any>,
   ) {
     return this.templateService.preview(id, userId, previewData);
+  }
+
+  @Post(':id/clone')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '템플릿 복제' })
+  clone(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @Query('newName') newName?: string,
+  ) {
+    return this.templateService.clone(id, userId, newName);
+  }
+
+  @Get(':id/versions')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '템플릿 버전 기록 조회' })
+  getVersionHistory(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.templateService.getVersionHistory(id, userId);
+  }
+
+  @Get(':id/versions/:version')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '특정 버전의 템플릿 조회' })
+  getVersion(
+    @Param('id') id: string,
+    @Param('version') version: number,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.templateService.getVersion(id, version, userId);
+  }
+
+  @Post(':id/versions/:version/restore')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '특정 버전으로 템플릿 복원' })
+  restoreVersion(
+    @Param('id') id: string,
+    @Param('version') version: number,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.templateService.restoreVersion(id, version, userId);
+  }
+
+  @Get(':id/versions/compare')
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: '두 버전의 템플릿 비교' })
+  compareVersions(
+    @Param('id') id: string,
+    @Query('version1') version1: number,
+    @Query('version2') version2: number,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.templateService.compareVersions(id, version1, version2, userId);
   }
 }

@@ -134,12 +134,34 @@ model MailTemplate {
   user        User      @relation(fields: [userId], references: [id])
   userId      String
   campaigns   Campaign[]
+  versions    MailTemplateVersion[]
   
   // 메타 필드
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   @@index([userId])
+}
+
+// MailTemplateVersion 모델: 메일 템플릿 버전
+model MailTemplateVersion {
+  id          String    @id @default(uuid())
+  version     Int
+  mjmlContent String    @db.Text
+  description String?
+  mergeTags   Json?     @db.JsonB
+  comment     String?
+  
+  // 관계
+  template    MailTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateId  String
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+  createdBy   String
+  
+  @@unique([templateId, version])
+  @@index([templateId])
 }
 
 // MailEvent 모델: 메일 이벤트 (발송, 열람, 클릭 등)
