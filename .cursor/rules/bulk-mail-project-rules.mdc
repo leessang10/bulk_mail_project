@@ -1,0 +1,790 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+## 디렉토리 구조
+
+bulk_mail_project/
+├── src/
+│ ├── config/ # 환경 설정 파일
+│ ├── modules/
+│ │ ├── mail/ # 메일 관련 모듈
+│ │ ├── recipient/ # 수신자 관련 모듈
+│ │ ├── campaign/ # 메일 캠페인 모듈
+│ │ └── analytics/ # 분석 모듈
+│ ├── common/ # 공통 유틸리티
+│ └── infrastructure/ # 인프라 설정 (Redis, Kafka 등)
+├── prisma/ # Prisma 스키마 및 마이그레이션
+├── test/ # 테스트 파일
+└── docker/ # Docker 설정 파일
+
+## 네이밍 컨벤션
+
+### 파일명
+- 모듈: `*.module.ts`
+- 컨트롤러: `*.controller.ts`
+- 서비스: `*.service.ts`
+- DTO: `*.dto.ts`
+- 엔티티: `*.entity.ts`
+- 인터페이스: `*.interface.ts`
+- 타입: `*.type.ts`
+- 상수: `*.constant.ts`
+- 유틸리티: `*.util.ts`
+
+### 클래스명
+- PascalCase 사용
+- 접미사는 역할에 따라 추가
+  - Controller: `MailController`
+  - Service: `MailService`
+  - DTO: `CreateMailDto`
+  - Entity: `MailEntity`
+
+### 변수명
+- camelCase 사용
+- 불리언 변수는 is, has, should 등의 접두사 사용
+  - `isProcessed`
+  - `hasAttachments`
+
+### 상수
+- UPPER_SNAKE_CASE 사용
+- `MAX_BATCH_SIZE = 1000`
+- `MAIL_QUEUE_NAME = 'mail-queue'`
+
+## 코드 스타일
+
+### Import 순서
+1. Node.js 빌트인 모듈
+2. 외부 라이브러리
+3. 내부 모듈 (상대 경로)
+
+```typescript
+import { join } from 'path';
+import { Injectable } from '@nestjs/common';
+import { MailService } from './mail.service';
+```
+
+### 비동기 처리
+- Promise 대신 async/await 사용
+- try-catch로 에러 처리
+
+```typescript
+async function sendMail() {
+  try {
+    await mailService.send();
+  } catch (error) {
+    // 에러 처리
+  }
+}
+```
+
+
+## NestJS 규칙
+
+### 모듈 구조
+- 기능별로 모듈 분리
+- 각 모듈은 독립적으로 동작하도록 설계
+```typescript
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([MailEntity]),
+    RedisModule,
+    KafkaModule,
+  ],
+  controllers: [MailController],
+  providers: [MailService],
+  exports: [MailService],
+})
+export class MailModule {}
+```
+
+### 의존성 주입
+- 생성자 기반 의존성 주입 사용
+- 인터페이스 기반 의존성 주입 권장
+```typescript
+@Injectable()
+export class MailService {
+  constructor(
+    private readonly mailRepository: MailRepository,
+    private readonly redisService: RedisService,
+    private readonly kafkaService: KafkaService,
+  ) {}
+}
+```
+
+### 예외 처리
+- NestJS 내장 예외 필터 활용
+- 커스텀 예외는 `@nestjs/common`의 `HttpException` 상속
+```typescript
+export class MailNotFoundException extends HttpException {
+  constructor() {
+    super('Mail not found', HttpStatus.NOT_FOUND);
+  }
+}
+```
+
+### 미들웨어 및 인터셉터
+- 전역 예외 필터 사용
+```typescript
+app.useGlobalFilters(new HttpExceptionFilter());
+```
+- 요청/응답 로깅 인터셉터 구현
+```typescript
+@Injectable()
+export class LoggingInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const req = context.switchToHttp().getRequest();
+    const method = req.method;
+    const url = req.url;
+    
+    return next.handle().pipe(
+      tap(() => {
+        logger.log(`${method} ${url}`);
+      }),
+    );
+  }
+}
+```
+
+
+## Redis 규칙
+
+### 키 네이밍
+- 콜론(:)으로 네임스페이스 구분
+- 키 구조: `project:entity:id:field`
+```typescript
+const REDIS_KEYS = {
+  MAIL_QUEUE: 'bulk-mail:queue',
+  CAMPAIGN_STATUS: 'bulk-mail:campaign:{id}:status',
+  RECIPIENT_GROUP: 'bulk-mail:recipient:group:{groupId}',
+  MAIL_ANALYTICS: 'bulk-mail:analytics:{campaignId}',
+};
+```
+
+### 캐싱 전략
+- 메일 발송 상태 캐싱: 5분
+- 수신자 그룹 정보: 1시간
+- 분석 데이터: 1일
+```typescript
+@CacheKey('mail_analytics')
+@CacheTTL(86400) // 1일
+async getMailAnalytics() {}
+```
+
+### Redis Pub/Sub
+- 채널 네이밍: `bulk-mail.event.{eventName}`
+- 이벤트 페이로드는 JSON 형식
+```typescript
+const REDIS_CHANNELS = {
+  MAIL_SENT: 'bulk-mail.event.mail_sent',
+  MAIL_OPENED: 'bulk-mail.event.mail_opened',
+  MAIL_CLICKED: 'bulk-mail.event.mail_clicked',
+};
+```
+
+### Redis 연결 관리
+- 커넥션 풀링 설정
+```typescript
+const redisOptions = {
+  host: process.env.REDIS_HOST,
+  port: parseInt(process.env.REDIS_PORT, 10),
+  password: process.env.REDIS_PASSWORD,
+  db: 0,
+  maxRetriesPerRequest: 3,
+  connectTimeout: 10000,
+};
+```
+
+## Kafka 규칙
+
+### 토픽 네이밍
+- 토픽명: `{project}.{domain}.{event}`
+```typescript
+const KAFKA_TOPICS = {
+  MAIL_SEND: 'bulk-mail.mail.send',
+  MAIL_STATUS: 'bulk-mail.mail.status',
+  RECIPIENT_UPDATE: 'bulk-mail.recipient.update',
+};
+```
+
+### 파티셔닝 전략
+- 메일 발송: campaignId 기준
+- 수신자 그룹: groupId 기준
+```typescript
+const partitionKey = `campaign-${campaignId}`;
+```
+
+### 컨슈머 그룹
+- 그룹 ID: `bulk-mail-{service}-{function}`
+```typescript
+const CONSUMER_GROUPS = {
+  MAIL_PROCESSOR: 'bulk-mail-mail-processor',
+  ANALYTICS_PROCESSOR: 'bulk-mail-analytics-processor',
+};
+```
+
+### 메시지 형식
+- 메시지 스키마 정의
+```typescript
+interface KafkaMessage<T> {
+  key: string;
+  value: T;
+  headers: Record<string, string>;
+  timestamp: string;
+}
+
+interface MailSendEvent {
+  campaignId: string;
+  recipientId: string;
+  templateId: string;
+  metadata: Record<string, any>;
+}
+```
+
+## Docker 규칙
+
+### 컨테이너 구성
+```yaml
+# docker-compose.yml 구조
+services:
+  api:
+    build: 
+      context: .
+      dockerfile: docker/api/Dockerfile
+    env_file: .env
+    
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+      
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+```
+
+### 도커 이미지 최적화
+- 멀티 스테이지 빌드 사용
+```dockerfile
+# 빌드 스테이지
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+# 실행 스테이지
+FROM node:18-alpine
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+CMD ["node", "dist/main"]
+```
+
+### 볼륨 관리
+- 데이터 영속성이 필요한 서비스는 명명된 볼륨 사용
+```yaml
+volumes:
+  redis-data:
+  kafka-data:
+  postgres-data:
+```
+
+### 네트워크 설정
+- 서비스 간 통신을 위한 네트워크 정의
+```yaml
+networks:
+  backend:
+    driver: bridge
+  frontend:
+    driver: bridge
+```
+
+## Prisma 규칙
+
+### 스키마 설계
+```prisma
+// prisma/schema.prisma
+model Campaign {
+  id          String      @id @default(uuid())
+  name        String
+  status      CampaignStatus
+  recipients  Recipient[]
+  groups      Group[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([status])
+}
+
+model Recipient {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  status      RecipientStatus
+  campaigns   Campaign[]
+  groups      Group[]
+  
+  @@index([email])
+}
+```
+
+### 마이그레이션 규칙
+- 마이그레이션 파일명: `YYYYMMDDHHMMSS_descriptive_name`
+- 롤백 고려한 마이그레이션 작성
+```bash
+npx prisma migrate dev --name add_recipient_status
+```
+
+### 쿼리 최적화
+- include와 select를 적절히 사용하여 N+1 문제 방지
+```typescript
+const campaign = await prisma.campaign.findUnique({
+  where: { id },
+  include: {
+    recipients: {
+      select: {
+        id: true,
+        email: true,
+        status: true,
+      },
+    },
+  },
+});
+```
+
+### 트랜잭션 처리
+```typescript
+await prisma.$transaction(async (tx) => {
+  const campaign = await tx.campaign.create({...});
+  await tx.recipient.createMany({...});
+});
+```
+
+### 모델 관계 정의
+- 적절한 관계 타입 사용(1:1, 1:N, N:M)
+```prisma
+model Group {
+  id          String      @id @default(uuid())
+  name        String
+  recipients  Recipient[] // N:M 관계
+  campaign    Campaign    @relation(fields: [campaignId], references: [id]) // N:1 관계
+  campaignId  String
+}
+```
+## 데이터베이스 규칙 (Prisma)
+
+### 테이블명
+- Prisma 기본 설정을 사용
+
+### 컬럼명
+- Prisma 기본 설정을 사용
+
+## API 엔드포인트 규칙
+- /api/v1/campaigns
+- /api/v1/recipients
+- /api/v1/groups
+
+### URL 구조
+- RESTful 규칙 준수
+- 복수형 명사 사용
+- 버전 접두사 포함
+
+### HTTP 메서드
+- GET: 조회
+- POST: 생성
+- PUT: 전체 수정
+- PATCH: 부분 수정
+- DELETE: 삭제
+
+### 응답 형식
+```typescript
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+  };
+  meta?: {
+    page: number;
+    limit: number;
+    total: number;
+  };
+}
+```
+
+## 로깅 규칙
+- Winston 로거 사용
+- 로그 레벨 적절히 사용
+  - ERROR: 치명적인 오류
+  - WARN: 경고
+  - INFO: 일반 정보
+  - DEBUG: 디버깅 정보
+
+## 테스트 규칙
+- 파일명: `*.spec.ts`
+- 테스트 커버리지 70% 이상 유지
+- 단위 테스트와 통합 테스트 분리
+
+
+### 테스트 구조
+```typescript
+describe('MailService', () => {
+  let service: MailService;
+  
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        MailService,
+        {
+          provide: MailRepository,
+          useValue: mockMailRepository,
+        },
+      ],
+    }).compile();
+    
+    service = module.get(MailService);
+  });
+  
+  it('should send mail', async () => {
+    // Arrange
+    const mailData = { /* ... */ };
+    
+    // Act
+    const result = await service.sendMail(mailData);
+    
+    // Assert
+    expect(result).toBeDefined();
+  });
+});
+```
+
+## Git 커밋 메시지
+- 형식: `type: subject`
+- 타입:
+  - feat: 새로운 기능
+  - fix: 버그 수정
+  - docs: 문서 수정
+  - style: 코드 포맷팅
+  - refactor: 코드 리팩토링
+  - test: 테스트 코드
+  - chore: 기타 변경사항
+
+## 보안 규칙
+- 환경 변수에 민감한 정보 저장
+- AWS 인증 정보는 환경 변수로 관리
+- API 키는 암호화하여 저장
+
+### 인증/인가
+- JWT 기반 인증
+```typescript
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  constructor(private readonly jwtService: JwtService) {}
+  
+  canActivate(context: ExecutionContext): boolean | Promise<boolean> {
+    const request = context.switchToHttp().getRequest();
+    const token = this.extractTokenFromHeader(request);
+    
+    if (!token) {
+      throw new UnauthorizedException();
+    }
+    
+    try {
+      const payload = this.jwtService.verify(token);
+      request.user = payload;
+      return true;
+    } catch (error) {
+      throw new UnauthorizedException();
+    }
+  }
+  
+  private extractTokenFromHeader(request: Request): string | undefined {
+    const [type, token] = request.headers.authorization?.split(' ') ?? [];
+    return type === 'Bearer' ? token : undefined;
+  }
+}
+```
+
+## 성능 최적화
+- N+1 문제 방지를 위한 적절한 관계 설정
+- 대량 메일 발송 시 배치 처리 활용
+- Redis 캐싱 적극 활용
+- Kafka를 통한 비동기 처리
+
+### 배치 처리
+```typescript
+async sendBulkMail(campaignId: string) {
+  const recipients = await this.recipientService.getByCampaignId(campaignId);
+  const batchSize = 1000;
+  
+  for (let i = 0; i < recipients.length; i += batchSize) {
+    const batch = recipients.slice(i, i + batchSize);
+    await this.kafkaService.send('bulk-mail.mail.send', {
+      campaignId,
+      recipientBatch: batch.map(r => r.id),
+    });
+  }
+}
+```
+
+## 성능 모니터링
+
+### 프로메테우스 메트릭
+- 메일 발송 성공/실패 카운터
+- 수신자 그룹 처리 시간
+- Kafka 메시지 처리 지연시간
+
+### 로그 수집
+- ELK 스택 활용
+- 구조화된 로깅 포맷
+```typescript
+logger.info('Mail sent', {
+  campaignId,
+  recipientCount,
+  duration,
+  timestamp: new Date().toISOString(),
+});
+```
+
+### Health Checks
+```typescript
+@Controller('health')
+export class HealthController {
+  constructor(
+    private readonly healthCheckService: HealthCheckService,
+    private readonly prismaHealthIndicator: PrismaHealthIndicator,
+    private readonly redisHealthIndicator: RedisHealthIndicator,
+  ) {}
+  
+  @Get()
+  @HealthCheck()
+  check() {
+    return this.healthCheckService.check([
+      () => this.prismaHealthIndicator.isHealthy('database'),
+      () => this.redisHealthIndicator.isHealthy('redis'),
+    ]);
+  }
+}
+```
+
+## AWS SES 메일 발송 규칙
+
+### MJML 기반 반응형 메일 템플릿
+- 모바일 및 데스크톱 환경에서 일관된 메일 표시를 위해 MJML 사용
+- 메일 템플릿 관리를 위한 구조
+```typescript
+// MJML 템플릿 예시
+const mjmlTemplate = `
+<mjml>
+  <mj-head>
+    <mj-title>{{subject}}</mj-title>
+    <mj-font name="Roboto" href="https://fonts.googleapis.com/css?family=Roboto:300,500"></mj-font>
+    <mj-attributes>
+      <mj-all font-family="Roboto, Arial"></mj-all>
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#f5f5f5">
+    <mj-section background-color="#ffffff" padding="20px">
+      <mj-column>
+        <mj-image width="150px" src="{{logoUrl}}"></mj-image>
+        <mj-divider border-color="#F45E43"></mj-divider>
+        <mj-text font-size="20px" color="#333333" font-weight="bold">{{title}}</mj-text>
+        <mj-text font-size="16px" color="#333333">안녕하세요 {{name}}님,</mj-text>
+        <mj-text font-size="16px" color="#333333">{{content}}</mj-text>
+        <mj-button background-color="#F45E43" href="{{trackingUrl}}">자세히 보기</mj-button>
+        <mj-divider border-width="1px" border-color="#eeeeee"></mj-divider>
+        <mj-text font-size="12px" color="#999999">본 메일은 발신 전용입니다. 문의사항은 고객센터를 이용해 주세요.</mj-text>
+        <mj-text font-size="12px" color="#999999">더 이상 메일을 받고 싶지 않으시면 <a href="{{unsubscribeUrl}}" style="color: #999999; text-decoration: underline;">수신거부</a>를 클릭하세요.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+`;
+```
+
+### MJML 처리 및 관리
+- MJML을 HTML로 변환하여 발송
+- 템플릿 재사용 및 관리
+```typescript
+// mjml 라이브러리 사용
+import mjml2html from 'mjml';
+
+// MJML 템플릿 처리 서비스
+@Injectable()
+export class TemplateService {
+  // MJML을 HTML로 변환
+  convertMjmlToHtml(mjmlContent: string): string {
+    const result = mjml2html(mjmlContent);
+    return result.html;
+  }
+  
+  // 템플릿 ID로 MJML 템플릿 조회
+  async getTemplateById(templateId: string): Promise<string> {
+    const template = await this.templateRepository.findOne(templateId);
+    return template.mjmlContent;
+  }
+  
+  // 머지 필드 처리 후 HTML 변환
+  async processTemplate(templateId: string, mergeFields: MergeFields): Promise<string> {
+    // MJML 템플릿 가져오기
+    const mjmlTemplate = await this.getTemplateById(templateId);
+    
+    // 머지 필드 처리
+    const processedMjml = this.processMergeFields(mjmlTemplate, mergeFields);
+    
+    // HTML로 변환
+    return this.convertMjmlToHtml(processedMjml);
+  }
+}
+```
+
+### 메일 템플릿 관리 시스템
+- 템플릿 CRUD 기능 
+- 버전 관리 및 히스토리 추적
+- 템플릿 미리보기 기능
+```typescript
+// 템플릿 저장 엔티티
+@Entity('mail_templates')
+export class MailTemplate {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+  
+  @Column()
+  name: string;
+  
+  @Column('text')
+  mjmlContent: string;
+  
+  @Column({ nullable: true })
+  description: string;
+  
+  @Column()
+  version: number;
+  
+  @Column({ default: false })
+  isActive: boolean;
+  
+  @CreateDateColumn()
+  createdAt: Date;
+  
+  @UpdateDateColumn()
+  updatedAt: Date;
+  
+  // 관계 정의
+  @OneToMany(() => MailTemplateDraft, draft => draft.template)
+  drafts: MailTemplateDraft[];
+}
+
+// 템플릿 컨트롤러
+@Controller('mail-templates')
+export class MailTemplateController {
+  constructor(private readonly templateService: TemplateService) {}
+  
+  @Post()
+  create(@Body() createTemplateDto: CreateTemplateDto) {
+    return this.templateService.create(createTemplateDto);
+  }
+  
+  @Get(':id/preview')
+  async preview(
+    @Param('id') id: string,
+    @Query() previewData: Record<string, string>
+  ) {
+    // 미리보기용 머지 데이터
+    const mergeFields = {
+      name: previewData.name || '테스트 사용자',
+      email: previewData.email || 'test@example.com',
+      customerId: previewData.customerId || 'test-id',
+      // 기타 필요한 미리보기 데이터
+    };
+    
+    // 템플릿 처리 및 HTML 변환
+    const htmlContent = await this.templateService.processTemplate(id, mergeFields);
+    
+    return { html: htmlContent };
+  }
+}
+```
+
+### 메일 템플릿 사용 방법
+- 캠페인 생성 시 템플릿 선택
+- 필요시 템플릿 커스터마이징
+```typescript
+async function sendCampaignEmails(campaignId: string) {
+  const campaign = await campaignRepository.findOne(campaignId, {
+    relations: ['template', 'recipients'],
+  });
+  
+  // 선택된 템플릿 가져오기
+  const mjmlTemplate = campaign.template.mjmlContent;
+  
+  // 각 수신자별로 개인화 처리 및 발송
+  for (const recipient of campaign.recipients) {
+    // 머지 필드 준비
+    const mergeFields = {
+      name: recipient.name || '고객',
+      email: recipient.email,
+      customerId: recipient.id,
+      // 기타 개인화 필드
+    };
+    
+    // MJML 처리 및 HTML 변환
+    const processedMjml = processMergeFields(mjmlTemplate, mergeFields);
+    const htmlContent = convertMjmlToHtml(processedMjml);
+    
+    // 이메일 발송
+    await sesClient.sendEmail({
+      Destination: { ToAddresses: [recipient.email] },
+      Message: {
+        Body: {
+          Html: {
+            Data: htmlContent,
+          },
+        },
+        Subject: {
+          Data: processMergeFields(campaign.subject, mergeFields),
+        },
+      },
+      Source: campaign.senderEmail,
+      ConfigurationSetName: 'BulkMailTracking',
+    });
+  }
+}
+```
+
+### 발송 상태 추적
+- SES 이벤트 알림을 SNS/SQS로 수신
+- 각 이메일 발송에 고유 MessageId 추적
+
+### 바운스/컴플레인 처리
+- 바운스/컴플레인 발생 시 수신자 상태 자동 업데이트
+- 수신 거부 리스트 관리
+
+### 개인화 처리
+```typescript
+async function sendPersonalizedEmail(recipient, campaign) {
+  const personalizedContent = template.replace(
+    '{{name}}', 
+    recipient.name || '고객'
+  );
+  
+  return sesClient.sendEmail({
+    Destination: { ToAddresses: [recipient.email] },
+    Message: {
+      Body: {
+        Html: {
+          Data: personalizedContent,
+        },
+      },
+      Subject: {
+        Data: campaign.subject,
+      },
+    },
+    Source: campaign.senderEmail,
+    ConfigurationSetName: 'BulkMailTracking',
+  });
+}
+```
+```
