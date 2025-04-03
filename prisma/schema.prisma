@@ -1,0 +1,195 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Campaign 모델: 메일 캠페인 정보
+model Campaign {
+  id          String      @id @default(uuid())
+  name        String
+  subject     String
+  senderEmail String
+  senderName  String
+  status      CampaignStatus
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  
+  // 관계
+  template    MailTemplate @relation(fields: [templateId], references: [id])
+  templateId  String
+  groups      Group[]
+  recipients  CampaignRecipient[]
+  mailEvents  MailEvent[]
+  
+  // 메타 필드
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([status])
+}
+
+// Recipient 모델: 수신자 정보
+model Recipient {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  name        String?
+  status      RecipientStatus @default(ACTIVE)
+  customFields Json?
+  
+  // 관계
+  groups      GroupRecipient[]
+  campaigns   CampaignRecipient[]
+  mailEvents  MailEvent[]
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([email])
+  @@index([status])
+}
+
+// CampaignRecipient 모델: Campaign과 Recipient의 M:N 관계
+model CampaignRecipient {
+  id          String    @id @default(uuid())
+  
+  // 관계
+  campaign    Campaign  @relation(fields: [campaignId], references: [id])
+  campaignId  String
+  recipient   Recipient @relation(fields: [recipientId], references: [id])
+  recipientId String
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+
+  @@unique([campaignId, recipientId])
+  @@index([campaignId])
+  @@index([recipientId])
+}
+
+// Group 모델: 수신자 그룹
+model Group {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  
+  // 관계
+  campaigns   Campaign[]
+  recipients  GroupRecipient[]
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// GroupRecipient 모델: Group과 Recipient의 M:N 관계
+model GroupRecipient {
+  id          String    @id @default(uuid())
+  
+  // 관계
+  group       Group     @relation(fields: [groupId], references: [id])
+  groupId     String
+  recipient   Recipient @relation(fields: [recipientId], references: [id])
+  recipientId String
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+
+  @@unique([groupId, recipientId])
+  @@index([groupId])
+  @@index([recipientId])
+}
+
+// MailTemplate 모델: 메일 템플릿
+model MailTemplate {
+  id          String    @id @default(uuid())
+  name        String
+  mjmlContent String    @db.Text
+  description String?
+  version     Int       @default(1)
+  isActive    Boolean   @default(true)
+  
+  // 관계
+  campaigns   Campaign[]
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// MailEvent 모델: 메일 이벤트 (발송, 열람, 클릭 등)
+model MailEvent {
+  id          String    @id @default(uuid())
+  type        MailEventType
+  messageId   String?   // AWS SES Message ID
+  metadata    Json?
+  
+  // 관계
+  campaign    Campaign  @relation(fields: [campaignId], references: [id])
+  campaignId  String
+  recipient   Recipient @relation(fields: [recipientId], references: [id])
+  recipientId String
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+
+  @@index([campaignId])
+  @@index([recipientId])
+  @@index([type])
+}
+
+// UnsubscribeToken 모델: 수신거부 토큰
+model UnsubscribeToken {
+  id          String    @id @default(uuid())
+  token       String    @unique
+  isUsed      Boolean   @default(false)
+  expiresAt   DateTime
+  
+  // 관계
+  recipientId String
+  campaignId  String
+  
+  // 메타 필드
+  createdAt   DateTime  @default(now())
+  usedAt      DateTime?
+
+  @@index([token])
+}
+
+// 캠페인 상태 열거형
+enum CampaignStatus {
+  DRAFT       // 초안
+  SCHEDULED   // 예약됨
+  SENDING     // 발송 중
+  COMPLETED   // 완료됨
+  CANCELLED   // 취소됨
+  FAILED      // 실패
+}
+
+// 수신자 상태 열거형
+enum RecipientStatus {
+  ACTIVE      // 활성
+  UNSUBSCRIBED // 수신거부
+  BOUNCED     // 반송됨
+  COMPLAINED  // 스팸 신고됨
+}
+
+// 메일 이벤트 타입 열거형
+enum MailEventType {
+  SENT        // 발송됨
+  DELIVERED   // 배달됨
+  OPENED      // 열람됨
+  CLICKED     // 클릭됨
+  BOUNCED     // 반송됨
+  COMPLAINED  // 스팸 신고됨
+}
