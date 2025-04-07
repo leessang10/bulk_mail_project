@@ -34,11 +34,6 @@ async function bootstrap() {
       },
       'access-token',
     )
-    .addTag('인증', '사용자 인증 및 권한 관리')
-    .addTag('템플릿', '메일 템플릿 관리')
-    .addTag('수신자', '수신자 및 그룹 관리')
-    .addTag('캠페인', '메일 캠페인 관리')
-    .addTag('분석', '캠페인 성과 분석')
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
