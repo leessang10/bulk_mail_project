@@ -9,7 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -20,6 +20,7 @@ import { UpdateTemplateDto } from './dto/update-template.dto';
 import { TemplateService } from './template.service';
 
 @ApiTags('템플릿')
+@ApiBearerAuth('JWT')
 @Controller('templates')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class TemplateController {
